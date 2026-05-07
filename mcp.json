@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "xcode-power": {
+      "command": "${XCODE_POWER_BINARY:-./xcode-power/.build/release/XcodePower}",
+      "disabled": false,
+      "autoApprove": [
+        "xcode_build",
+        "xcode_test",
+        "xcode_run",
+        "xcode_list_schemes",
+        "xcode_get_errors",
+        "xcode_clean"
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Handles the `xcode_test` tool call.
-/// Validates parameters, checks Xcode availability, triggers tests, monitors completion,
+/// Validates parameters, checks Xcode availability, triggers tests (with polling),
 /// and parses test results from the .xcresult bundle.
 struct TestHandler: ToolHandler {
 
@@ -31,12 +31,6 @@ struct TestHandler: ToolHandler {
     private let resultParser: ResultParser
     private let derivedDataPath: String
 
-    /// Creates a TestHandler with the given dependencies.
-    /// - Parameters:
-    ///   - controller: The Xcode controller for executing JXA scripts.
-    ///   - buildMonitor: The build monitor for polling test completion.
-    ///   - resultParser: The parser for extracting test results from .xcresult bundles.
-    ///   - derivedDataPath: The path to the derived data directory.
     init(
         controller: XcodeController,
         buildMonitor: BuildMonitor,
@@ -91,40 +85,57 @@ struct TestHandler: ToolHandler {
             )
         }
 
-        // Trigger test action
+        // Trigger test action — the JXA script polls until completion and returns the status.
+        let startTime = ContinuousClock.now
         do {
-            _ = try await controller.test(scheme: scheme, testIdentifier: testIdentifier)
+            let testScript = XcodeController.jxaTest(scheme: scheme, testIdentifier: testIdentifier)
+            let output = try await controller.executeJXA(testScript, timeout: .seconds(300))
+            let duration = ContinuousClock.now - startTime
+            let durationSeconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+
+            let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+            // Try to parse test results from .xcresult bundle
+            let testResults = await parseTestResults()
+
+            if let results = testResults {
+                let encoder = JSONEncoder()
+                let json = try encoder.encode(results)
+                let text = String(data: json, encoding: .utf8) ?? "{}"
+                let isError = results.failedCount > 0 ? true : nil
+                return ToolResult(content: [ToolContent(type: "text", text: text)], isError: isError)
+            }
+
+            // Fallback: return status if we can't parse xcresult
+            if trimmedOutput.contains("succeeded") {
+                let result: [String: Any] = ["status": "succeeded", "duration": durationSeconds, "message": "Tests passed"]
+                let json = try JSONSerialization.data(withJSONObject: result)
+                let text = String(data: json, encoding: .utf8) ?? "{}"
+                return ToolResult(content: [ToolContent(type: "text", text: text)], isError: nil)
+            } else {
+                // Get diagnostics for failure info
+                let diagnostics = (try? await controller.getDiagnostics()) ?? []
+                var result: [String: Any] = ["status": "failed", "duration": durationSeconds]
+                if !diagnostics.isEmpty {
+                    let diagEncoder = JSONEncoder()
+                    if let diagData = try? diagEncoder.encode(diagnostics),
+                       let diagArray = try? JSONSerialization.jsonObject(with: diagData) {
+                        result["errors"] = diagArray
+                    }
+                }
+                let json = try JSONSerialization.data(withJSONObject: result)
+                let text = String(data: json, encoding: .utf8) ?? "{}"
+                return ToolResult(content: [ToolContent(type: "text", text: text)], isError: true)
+            }
         } catch {
-            return ToolResult(
-                content: [ToolContent(type: "text", text: "Error: Failed to trigger test action: \(error)")],
-                isError: true
-            )
-        }
-
-        // Await test completion
-        do {
-            let status = try await buildMonitor.awaitCompletion()
-
-            switch status {
-            case .succeeded, .failed:
-                // Parse test results from .xcresult bundle
-                return await parseAndReturnResults()
-
-            case .timedOut:
+            if "\(error)".contains("timeout") || "\(error)".contains("Timeout") {
                 return ToolResult(
                     content: [ToolContent(type: "text", text: "Error: Test execution timed out after 300 seconds.")],
                     isError: true
                 )
-
-            case .running:
-                return ToolResult(
-                    content: [ToolContent(type: "text", text: "Error: Build monitor returned unexpected 'running' status.")],
-                    isError: true
-                )
             }
-        } catch {
             return ToolResult(
-                content: [ToolContent(type: "text", text: "Error: Test monitoring failed: \(error)")],
+                content: [ToolContent(type: "text", text: "Error: Test execution failed: \(error)")],
                 isError: true
             )
         }
@@ -132,41 +143,13 @@ struct TestHandler: ToolHandler {
 
     // MARK: - Private Helpers
 
-    /// Parses test results from the latest .xcresult bundle and returns them as a ToolResult.
-    private func parseAndReturnResults() async -> ToolResult {
+    /// Attempts to parse test results from the latest .xcresult bundle.
+    private func parseTestResults() async -> TestResults? {
         do {
             let bundlePath = try resultParser.findLatestXCResult(derivedDataPath: derivedDataPath)
-            let testResults = try await resultParser.parseTestResults(bundlePath: bundlePath)
-
-            let encoder = JSONEncoder()
-            let json = try encoder.encode(testResults)
-            let text = String(data: json, encoding: .utf8) ?? "{}"
-
-            let isError = testResults.failedCount > 0 ? true : nil
-            return ToolResult(content: [ToolContent(type: "text", text: text)], isError: isError)
-        } catch let error as XcodePowerError {
-            switch error {
-            case .xcresultNotFound(let searchPath):
-                return ToolResult(
-                    content: [ToolContent(type: "text", text: "Error: No .xcresult bundle found at \(searchPath). Tests may not have produced results.")],
-                    isError: true
-                )
-            case .xcresultParsingFailed(let reason):
-                return ToolResult(
-                    content: [ToolContent(type: "text", text: "Error: Failed to parse test results: \(reason)")],
-                    isError: true
-                )
-            default:
-                return ToolResult(
-                    content: [ToolContent(type: "text", text: "Error: \(error)")],
-                    isError: true
-                )
-            }
+            return try await resultParser.parseTestResults(bundlePath: bundlePath)
         } catch {
-            return ToolResult(
-                content: [ToolContent(type: "text", text: "Error: Failed to parse test results: \(error)")],
-                isError: true
-            )
+            return nil
         }
     }
 }

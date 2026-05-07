@@ -174,6 +174,8 @@ actor XcodeController: XcodeControlling {
     }
 
     /// Generates JXA script to trigger a test action.
+    /// Like build, the test command is asynchronous. We poll actionResult.status()
+    /// until it reaches a terminal state.
     /// - Parameters:
     ///   - scheme: The scheme to test, or nil for the active scheme.
     ///   - testIdentifier: Optional test class or method identifier.
@@ -198,27 +200,35 @@ actor XcodeController: XcodeControlling {
             """
         }
 
+        // Trigger the test and capture the action result
         if scheme != nil && testIdentifier != nil {
             script += """
-            xcode.test(workspace, {scheme: schemeToUse, testIdentifier: testId});
-            "test triggered for scheme: " + schemeToUse + " test: " + testId;
+            var actionResult = xcode.test(workspace, {scheme: schemeToUse, testIdentifier: testId});
             """
         } else if scheme != nil {
             script += """
-            xcode.test(workspace, {scheme: schemeToUse});
-            "test triggered for scheme: " + schemeToUse;
+            var actionResult = xcode.test(workspace, {scheme: schemeToUse});
             """
         } else if testIdentifier != nil {
             script += """
-            xcode.test(workspace, {testIdentifier: testId});
-            "test triggered for test: " + testId;
+            var actionResult = xcode.test(workspace, {testIdentifier: testId});
             """
         } else {
             script += """
-            xcode.test(workspace);
-            "test triggered for active scheme";
+            var actionResult = xcode.test(workspace);
             """
         }
+
+        // Poll until terminal status
+        script += """
+
+        var status = actionResult.status();
+        while (status === "not yet started" || status === "running") {
+            delay(2);
+            status = actionResult.status();
+        }
+        status;
+        """
 
         return script
     }

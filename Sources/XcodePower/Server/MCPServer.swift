@@ -7,7 +7,7 @@ actor MCPServer {
     /// Server metadata
     static let serverName = "xcode-power"
     static let serverVersion = "1.0.0"
-    static let protocolVersion = "2024-11-05"
+    static let protocolVersion = "2025-11-25"
 
     /// Server state
     enum State: Sendable, Equatable {
@@ -31,9 +31,18 @@ actor MCPServer {
 
     /// Handles the `initialize` method.
     /// Returns server info, capabilities, and protocol version.
+    /// Negotiates protocol version by accepting the client's requested version.
     func handleInitialize(request: JSONRPCRequest) async -> JSONRPCResponse {
+        // Extract the client's requested protocol version
+        var negotiatedVersion = Self.protocolVersion
+        if let params = request.params,
+           let paramsDict = params.value as? [String: Any],
+           let clientVersion = paramsDict["protocolVersion"] as? String {
+            negotiatedVersion = clientVersion
+        }
+
         let result = InitializeResult(
-            protocolVersion: Self.protocolVersion,
+            protocolVersion: negotiatedVersion,
             capabilities: ServerCapabilities(
                 tools: ToolsCapability(listChanged: false)
             ),

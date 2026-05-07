@@ -23,6 +23,11 @@ final class StdioTransport: @unchecked Sendable {
     ) {
         self.inputHandle = inputHandle
         self.outputHandle = outputHandle
+
+        // Disable buffering on stdout so responses are sent immediately.
+        // This is critical for MCP stdio transport where the client is
+        // waiting for the response and won't see it until the buffer flushes.
+        setvbuf(stdout, nil, _IONBF, 0)
     }
 
     /// Writes a JSON-RPC response message to stdout using Content-Length framing.
@@ -32,12 +37,18 @@ final class StdioTransport: @unchecked Sendable {
         writeLock.lock()
         defer { writeLock.unlock() }
 
-        // Use Content-Length framing for output (standard MCP framing)
-        let header = "Content-Length: \(data.count)\r\n\r\n"
-        if let headerData = header.data(using: .utf8) {
-            outputHandle.write(headerData)
+        // Write JSON followed by newline (newline-delimited JSON framing)
+        var output = data
+        output.append(contentsOf: [0x0A]) // \n
+
+        output.withUnsafeBytes { ptr in
+            var written = 0
+            while written < ptr.count {
+                let n = Darwin.write(outputHandle.fileDescriptor, ptr.baseAddress! + written, ptr.count - written)
+                if n <= 0 { break }
+                written += n
+            }
         }
-        outputHandle.write(data)
     }
 
     /// Starts the read loop on a dedicated thread, yielding messages as an AsyncStream.

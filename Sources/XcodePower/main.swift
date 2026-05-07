@@ -45,10 +45,20 @@ func runServer() async {
     let messages = transport.messages()
 
     for await message in messages {
+        // Debug: log received message to stderr
+        let msgStr = String(data: message, encoding: .utf8) ?? "<non-utf8>"
+        FileHandle.standardError.write("Received: \(msgStr)\n".data(using: .utf8)!)
+
         // Route the message through the JSON-RPC router
         if let responseData = await router.route(message) {
+            // Debug: log response to stderr
+            let respStr = String(data: responseData, encoding: .utf8) ?? "<non-utf8>"
+            FileHandle.standardError.write("Sending: \(respStr)\n".data(using: .utf8)!)
+
             // Write the response back via transport
             transport.writeMessage(responseData)
+
+            FileHandle.standardError.write("Response written\n".data(using: .utf8)!)
         }
         // If route returns nil, it was a notification — no response needed
     }

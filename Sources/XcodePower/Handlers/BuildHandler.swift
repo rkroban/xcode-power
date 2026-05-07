@@ -66,54 +66,50 @@ struct BuildHandler: ToolHandler {
             )
         }
 
-        // Trigger build
+        // Trigger build — Xcode's JXA build() command is synchronous and blocks until complete.
+        // Use a long timeout (300s) since builds can take a while.
         let startTime = ContinuousClock.now
         do {
-            _ = try await controller.build(scheme: scheme)
-        } catch {
-            return ToolResult(
-                content: [ToolContent(type: "text", text: "Error: Failed to trigger build: \(error)")],
-                isError: true
-            )
-        }
-
-        // Await build completion
-        do {
-            let status = try await buildMonitor.awaitCompletion()
+            let buildScript: String
+            if let scheme = scheme {
+                buildScript = XcodeController.jxaBuild(scheme: scheme)
+            } else {
+                buildScript = XcodeController.jxaBuild(scheme: nil)
+            }
+            let output = try await controller.executeJXA(buildScript, timeout: .seconds(300))
             let duration = ContinuousClock.now - startTime
             let durationSeconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
 
-            switch status {
-            case .succeeded:
+            let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+            if trimmedOutput.contains("succeeded") || trimmedOutput == "build succeeded" {
                 let result = BuildResult(status: .succeeded, duration: durationSeconds, errors: nil)
                 let json = try JSONEncoder().encode(result)
                 let text = String(data: json, encoding: .utf8) ?? "{}"
                 return ToolResult(content: [ToolContent(type: "text", text: text)], isError: nil)
-
-            case .failed:
-                // Fetch diagnostics for the failure
+            } else {
+                // Build failed — fetch diagnostics
                 let diagnostics = (try? await controller.getDiagnostics()) ?? []
                 let result = BuildResult(status: .failed, duration: durationSeconds, errors: diagnostics.isEmpty ? nil : diagnostics)
                 let json = try JSONEncoder().encode(result)
                 let text = String(data: json, encoding: .utf8) ?? "{}"
                 return ToolResult(content: [ToolContent(type: "text", text: text)], isError: true)
-
-            case .timedOut:
-                let result = BuildResult(status: .timedOut, duration: durationSeconds, errors: nil)
-                let json = try JSONEncoder().encode(result)
-                let text = String(data: json, encoding: .utf8) ?? "{}"
-                return ToolResult(content: [ToolContent(type: "text", text: text)], isError: true)
-
-            case .running:
-                // Should not happen after awaitCompletion, but handle defensively
-                return ToolResult(
-                    content: [ToolContent(type: "text", text: "Error: Build monitor returned unexpected 'running' status.")],
-                    isError: true
-                )
             }
         } catch {
+            let duration = ContinuousClock.now - startTime
+            let durationSeconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+
+            // Check if it was a timeout
+            if "\(error)".contains("timeout") || "\(error)".contains("Timeout") {
+                let result = BuildResult(status: .timedOut, duration: durationSeconds, errors: nil)
+                if let json = try? JSONEncoder().encode(result),
+                   let text = String(data: json, encoding: .utf8) {
+                    return ToolResult(content: [ToolContent(type: "text", text: text)], isError: true)
+                }
+            }
+
             return ToolResult(
-                content: [ToolContent(type: "text", text: "Error: Build monitoring failed: \(error)")],
+                content: [ToolContent(type: "text", text: "Error: Build failed: \(error)")],
                 isError: true
             )
         }

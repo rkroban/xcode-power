@@ -141,6 +141,8 @@ actor XcodeController: XcodeControlling {
     }
 
     /// Generates JXA script to trigger a build action.
+    /// The Xcode `build` command is asynchronous — it returns a scheme action result
+    /// immediately. We poll actionResult.status() until it reaches a terminal state.
     /// - Parameter scheme: The scheme to build, or nil for the active scheme.
     static func jxaBuild(scheme: String?) -> String {
         if let scheme = scheme {
@@ -148,15 +150,25 @@ actor XcodeController: XcodeControlling {
             var xcode = Application("Xcode");
             var workspace = xcode.workspaceDocuments[0];
             var schemeToUse = "\(escapeJXAString(scheme))";
-            xcode.build(workspace, {scheme: schemeToUse});
-            "build triggered for scheme: " + schemeToUse;
+            var actionResult = xcode.build(workspace, {scheme: schemeToUse});
+            var status = actionResult.status();
+            while (status === "not yet started" || status === "running") {
+                delay(2);
+                status = actionResult.status();
+            }
+            status;
             """
         } else {
             return """
             var xcode = Application("Xcode");
             var workspace = xcode.workspaceDocuments[0];
-            xcode.build(workspace);
-            "build triggered for active scheme";
+            var actionResult = xcode.build(workspace);
+            var status = actionResult.status();
+            while (status === "not yet started" || status === "running") {
+                delay(2);
+                status = actionResult.status();
+            }
+            status;
             """
         }
     }
@@ -251,16 +263,31 @@ actor XcodeController: XcodeControlling {
         """
         var xcode = Application("Xcode");
         var workspace = xcode.workspaceDocuments[0];
-        var issues = workspace.buildMessages();
+        var result = workspace.lastSchemeActionResult();
         var diagnostics = [];
-        for (var i = 0; i < issues.length; i++) {
-            var issue = issues[i];
-            diagnostics.push({
-                severity: issue.messageType() === "error" ? "error" : "warning",
-                message: issue.message(),
-                filePath: issue.filePath() || null,
-                lineNumber: issue.startingLineNumber() || null
-            });
+        var errors = result.buildErrors();
+        for (var i = 0; i < errors.length; i++) {
+            var e = errors[i];
+            if (e) {
+                diagnostics.push({
+                    severity: "error",
+                    message: e.message(),
+                    filePath: e.filePath() || null,
+                    lineNumber: e.startingLineNumber() || null
+                });
+            }
+        }
+        var warnings = result.buildWarnings();
+        for (var j = 0; j < warnings.length; j++) {
+            var w = warnings[j];
+            if (w) {
+                diagnostics.push({
+                    severity: "warning",
+                    message: w.message(),
+                    filePath: w.filePath() || null,
+                    lineNumber: w.startingLineNumber() || null
+                });
+            }
         }
         JSON.stringify(diagnostics);
         """

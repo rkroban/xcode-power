@@ -25,6 +25,7 @@ func runServer() async {
         SchemesHandler(controller: controller),
         ErrorsHandler(controller: controller),
         CleanHandler(controller: controller),
+        BuildLogHandler(controller: controller),
     ]
 
     // Create tool registry with all handlers

@@ -8,8 +8,19 @@
         "xcode_test",
         "xcode_run",
         "xcode_list_schemes",
+        "xcode_list_destinations",
         "xcode_get_errors",
-        "xcode_clean"
+        "xcode_get_test_log",
+        "xcode_clean",
+        "xcode_list_packages",
+        "xcode_add_package",
+        "xcode_remove_package",
+        "xcode_list_targets",
+        "xcode_add_target",
+        "xcode_remove_target",
+        "xcode_list_frameworks",
+        "xcode_add_framework",
+        "xcode_remove_framework"
       ]
     }
   }

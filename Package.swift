@@ -11,11 +11,15 @@ let package = Package(
         .executable(name: "XcodePower", targets: ["XcodePower"])
     ],
     dependencies: [
-        .package(url: "https://github.com/typelift/SwiftCheck", from: "0.12.0")
+        .package(url: "https://github.com/typelift/SwiftCheck", from: "0.12.0"),
+        .package(url: "https://github.com/tuist/XcodeProj.git", from: "8.0.0")
     ],
     targets: [
         .executableTarget(
             name: "XcodePower",
+            dependencies: [
+                "XcodeProj"
+            ],
             path: "Sources/XcodePower"
         ),
         .testTarget(

@@ -56,6 +56,26 @@ struct CleanHandler: ToolHandler {
             )
         }
 
+        // Validate scheme exists if provided
+        if let scheme = scheme {
+            do {
+                let availableSchemes = try await controller.listSchemes()
+                let schemeNames = availableSchemes.map { $0.name }
+                if !schemeNames.contains(scheme) {
+                    let list = schemeNames.isEmpty ? "No schemes found." : "Available schemes: \(schemeNames.joined(separator: ", "))"
+                    return ToolResult(
+                        content: [ToolContent(type: "text", text: "Error: Scheme '\(scheme)' not found. \(list)")],
+                        isError: true
+                    )
+                }
+            } catch {
+                return ToolResult(
+                    content: [ToolContent(type: "text", text: "Error: Failed to validate scheme: \(error)")],
+                    isError: true
+                )
+            }
+        }
+
         // Trigger clean action
         do {
             _ = try await controller.clean(scheme: scheme)

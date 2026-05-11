@@ -17,15 +17,29 @@ func runServer() async {
     let buildMonitor = BuildMonitor(processExecutor: processExecutor)
     let resultParser = ResultParser(processExecutor: processExecutor)
 
+    // Create project manager
+    let projectManager = ProjectManager(controller: controller)
+
     // Create tool handlers
     let handlers: [ToolHandler] = [
         BuildHandler(controller: controller, buildMonitor: buildMonitor),
         TestHandler(controller: controller, buildMonitor: buildMonitor, resultParser: resultParser),
         RunHandler(controller: controller),
         SchemesHandler(controller: controller),
+        DestinationsHandler(controller: controller),
         ErrorsHandler(controller: controller),
         CleanHandler(controller: controller),
         BuildLogHandler(controller: controller),
+        TestLogHandler(controller: controller),
+        ListPackagesHandler(projectManager: projectManager),
+        AddPackageHandler(projectManager: projectManager),
+        RemovePackageHandler(projectManager: projectManager),
+        ListFrameworksHandler(projectManager: projectManager),
+        AddFrameworkHandler(projectManager: projectManager),
+        RemoveFrameworkHandler(projectManager: projectManager),
+        ListTargetsHandler(projectManager: projectManager),
+        AddTargetHandler(projectManager: projectManager),
+        RemoveTargetHandler(projectManager: projectManager),
     ]
 
     // Create tool registry with all handlers

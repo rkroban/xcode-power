@@ -42,23 +42,23 @@ actor XcodeController: XcodeControlling {
     // MARK: - Build, Test, Run, Schemes, Diagnostics, Clean
 
     /// Triggers a build for the given scheme (nil = active scheme).
-    func build(scheme: String?) async throws -> String {
+    func build(scheme: String?, destination: String? = nil) async throws -> String {
         try await ensureXcodeReady(requireProject: true)
-        let script = Self.jxaBuild(scheme: scheme)
+        let script = Self.jxaBuild(scheme: scheme, destination: destination)
         return try await executeJXA(script, timeout: Self.defaultTimeout)
     }
 
     /// Triggers test execution for the given scheme and optional test identifier.
-    func test(scheme: String?, testIdentifier: String?) async throws -> String {
+    func test(scheme: String?, testIdentifier: String?, destination: String? = nil) async throws -> String {
         try await ensureXcodeReady(requireProject: true)
-        let script = Self.jxaTest(scheme: scheme, testIdentifier: testIdentifier)
+        let script = Self.jxaTest(scheme: scheme, testIdentifier: testIdentifier, destination: destination)
         return try await executeJXA(script, timeout: Self.defaultTimeout)
     }
 
     /// Triggers run action for the given scheme (nil = active scheme).
-    func run(scheme: String?) async throws -> String {
+    func run(scheme: String?, destination: String? = nil) async throws -> String {
         try await ensureXcodeReady(requireProject: true)
-        let script = Self.jxaRun(scheme: scheme)
+        let script = Self.jxaRun(scheme: scheme, destination: destination)
         return try await executeJXA(script, timeout: Self.defaultTimeout)
     }
 
@@ -83,6 +83,14 @@ actor XcodeController: XcodeControlling {
         try await ensureXcodeReady(requireProject: false)
         let script = Self.jxaClean(scheme: scheme)
         return try await executeJXA(script, timeout: Self.defaultTimeout)
+    }
+
+    /// Lists all available run destinations in the active workspace.
+    func listDestinations() async throws -> [DestinationInfo] {
+        try await ensureXcodeReady(requireProject: false)
+        let script = Self.jxaListDestinations()
+        let output = try await executeJXA(script, timeout: Self.defaultTimeout)
+        return parseDestinations(from: output)
     }
 
     // MARK: - Private Helpers
@@ -121,6 +129,17 @@ actor XcodeController: XcodeControlling {
         return diagnostics
     }
 
+    /// Parses destination info from JXA JSON output.
+    private func parseDestinations(from output: String) -> [DestinationInfo] {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "[]" else { return [] }
+        guard let data = trimmed.data(using: .utf8),
+              let destinations = try? JSONDecoder().decode([DestinationInfo].self, from: data) else {
+            return []
+        }
+        return destinations
+    }
+
     // MARK: - JXA Script Generation (internal for testing)
 
     /// Generates JXA script to check if Xcode is running.
@@ -143,43 +162,10 @@ actor XcodeController: XcodeControlling {
     /// Generates JXA script to trigger a build action.
     /// The Xcode `build` command is asynchronous — it returns a scheme action result
     /// immediately. We poll actionResult.status() until it reaches a terminal state.
-    /// - Parameter scheme: The scheme to build, or nil for the active scheme.
-    static func jxaBuild(scheme: String?) -> String {
-        if let scheme = scheme {
-            return """
-            var xcode = Application("Xcode");
-            var workspace = xcode.workspaceDocuments[0];
-            var schemeToUse = "\(escapeJXAString(scheme))";
-            var actionResult = xcode.build(workspace, {scheme: schemeToUse});
-            var status = actionResult.status();
-            while (status === "not yet started" || status === "running") {
-                delay(2);
-                status = actionResult.status();
-            }
-            status;
-            """
-        } else {
-            return """
-            var xcode = Application("Xcode");
-            var workspace = xcode.workspaceDocuments[0];
-            var actionResult = xcode.build(workspace);
-            var status = actionResult.status();
-            while (status === "not yet started" || status === "running") {
-                delay(2);
-                status = actionResult.status();
-            }
-            status;
-            """
-        }
-    }
-
-    /// Generates JXA script to trigger a test action.
-    /// Like build, the test command is asynchronous. We poll actionResult.status()
-    /// until it reaches a terminal state.
     /// - Parameters:
-    ///   - scheme: The scheme to test, or nil for the active scheme.
-    ///   - testIdentifier: Optional test class or method identifier.
-    static func jxaTest(scheme: String?, testIdentifier: String?) -> String {
+    ///   - scheme: The scheme to build, or nil for the active scheme.
+    ///   - destination: The run destination name, or nil for the active destination.
+    static func jxaBuild(scheme: String?, destination: String? = nil) -> String {
         var script = """
         var xcode = Application("Xcode");
         var workspace = xcode.workspaceDocuments[0];
@@ -189,8 +175,62 @@ actor XcodeController: XcodeControlling {
         if let scheme = scheme {
             script += """
             var schemeToUse = "\(escapeJXAString(scheme))";
+            workspace.activeScheme = workspace.schemes.whose({name: schemeToUse})[0];
 
             """
+        }
+
+        if let destination = destination {
+            script += jxaSetDestination(destination) + "\n"
+        }
+
+        if scheme != nil {
+            script += """
+            var actionResult = xcode.build(workspace, {scheme: schemeToUse});
+            """
+        } else {
+            script += """
+            var actionResult = xcode.build(workspace);
+            """
+        }
+
+        script += """
+
+        var status = actionResult.status();
+        while (status === "not yet started" || status === "running") {
+            delay(2);
+            status = actionResult.status();
+        }
+        status;
+        """
+
+        return script
+    }
+
+    /// Generates JXA script to trigger a test action.
+    /// Like build, the test command is asynchronous. We poll actionResult.status()
+    /// until it reaches a terminal state.
+    /// - Parameters:
+    ///   - scheme: The scheme to test, or nil for the active scheme.
+    ///   - testIdentifier: Optional test class or method identifier.
+    ///   - destination: The run destination name, or nil for the active destination.
+    static func jxaTest(scheme: String?, testIdentifier: String?, destination: String? = nil) -> String {
+        var script = """
+        var xcode = Application("Xcode");
+        var workspace = xcode.workspaceDocuments[0];
+
+        """
+
+        if let scheme = scheme {
+            script += """
+            var schemeToUse = "\(escapeJXAString(scheme))";
+            workspace.activeScheme = workspace.schemes.whose({name: schemeToUse})[0];
+
+            """
+        }
+
+        if let destination = destination {
+            script += jxaSetDestination(destination) + "\n"
         }
 
         if let testIdentifier = testIdentifier {
@@ -234,24 +274,41 @@ actor XcodeController: XcodeControlling {
     }
 
     /// Generates JXA script to trigger a run action.
-    /// - Parameter scheme: The scheme to run, or nil for the active scheme.
-    static func jxaRun(scheme: String?) -> String {
+    /// - Parameters:
+    ///   - scheme: The scheme to run, or nil for the active scheme.
+    ///   - destination: The run destination name, or nil for the active destination.
+    static func jxaRun(scheme: String?, destination: String? = nil) -> String {
+        var script = """
+        var xcode = Application("Xcode");
+        var workspace = xcode.workspaceDocuments[0];
+
+        """
+
         if let scheme = scheme {
-            return """
-            var xcode = Application("Xcode");
-            var workspace = xcode.workspaceDocuments[0];
+            script += """
             var schemeToUse = "\(escapeJXAString(scheme))";
+            workspace.activeScheme = workspace.schemes.whose({name: schemeToUse})[0];
+
+            """
+        }
+
+        if let destination = destination {
+            script += jxaSetDestination(destination) + "\n"
+        }
+
+        if scheme != nil {
+            script += """
             xcode.run(workspace, {scheme: schemeToUse});
             "run triggered for scheme: " + schemeToUse;
             """
         } else {
-            return """
-            var xcode = Application("Xcode");
-            var workspace = xcode.workspaceDocuments[0];
+            script += """
             xcode.run(workspace);
             "run triggered for active scheme";
             """
         }
+
+        return script
     }
 
     /// Generates JXA script to list all schemes in the active workspace.
@@ -265,6 +322,41 @@ actor XcodeController: XcodeControlling {
             names.push(schemes[i].name());
         }
         JSON.stringify(names);
+        """
+    }
+
+    /// Generates JXA script to list all available run destinations.
+    static func jxaListDestinations() -> String {
+        """
+        var xcode = Application("Xcode");
+        var workspace = xcode.workspaceDocuments[0];
+        var destinations = workspace.runDestinations();
+        var result = [];
+        for (var i = 0; i < destinations.length; i++) {
+            var d = destinations[i];
+            result.push({
+                name: d.name(),
+                platform: d.platform() || null,
+                architecture: d.architecture() || null
+            });
+        }
+        JSON.stringify(result);
+        """
+    }
+
+    /// Generates JXA snippet to set the active run destination by name.
+    /// Returns the snippet to prepend to a build/test/run script.
+    /// - Parameter destination: The destination name to select.
+    static func jxaSetDestination(_ destination: String) -> String {
+        """
+        var destName = "\(escapeJXAString(destination))";
+        var dests = workspace.runDestinations();
+        for (var di = 0; di < dests.length; di++) {
+            if (dests[di].name() === destName) {
+                workspace.activeRunDestination = dests[di];
+                break;
+            }
+        }
         """
     }
 
@@ -311,6 +403,7 @@ actor XcodeController: XcodeControlling {
             var xcode = Application("Xcode");
             var workspace = xcode.workspaceDocuments[0];
             var schemeToUse = "\(escapeJXAString(scheme))";
+            workspace.activeScheme = workspace.schemes.whose({name: schemeToUse})[0];
             xcode.clean(workspace, {scheme: schemeToUse});
             "clean triggered for scheme: " + schemeToUse;
             """
@@ -322,6 +415,23 @@ actor XcodeController: XcodeControlling {
             "clean triggered for active scheme";
             """
         }
+    }
+
+    /// Generates JXA script to get the project file path from the frontmost workspace document.
+    /// Returns the file path of the frontmost workspace document in Xcode.
+    /// If multiple workspace documents are open, uses the frontmost one.
+    static func jxaGetProjectPath() -> String {
+        """
+        var xcode = Application("Xcode");
+        var docs = xcode.workspaceDocuments();
+        if (docs.length === 0) {
+            null;
+        } else {
+            var doc = docs[0];
+            var filePath = doc.file().toString();
+            filePath;
+        }
+        """
     }
 
     /// Escapes a string for safe inclusion in a JXA script.
